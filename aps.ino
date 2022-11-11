@@ -877,7 +877,7 @@ if(rele1){
 void toggleRelay2(){
 if(rele2){
   digitalWrite(rele2Pin, LOW);
-  rele1=false;
+  rele2=false;
 }
   else{
     digitalWrite(rele2Pin, HIGH);
