@@ -18,6 +18,8 @@
 #define rele1Pin 12
 #define rele2Pin 13
 
+#define btnPin 11
+
 #define flowInPin 8
 #define flowOutPin 9
 
@@ -140,6 +142,9 @@ String loc, location, stringToSend;
 
 bool ModuleState=false;
 
+
+volatile int buttonState = 0;
+
 // Setup di sistema con pin
 void setup() {
   
@@ -150,6 +155,8 @@ void setup() {
 
     pinMode(rele1Pin, OUTPUT); 
     pinMode(rele2Pin, OUTPUT);
+
+    pinMode(btnPin, INPUT);
     
     pinMode(A5, INPUT);
     pinMode(A3, INPUT);
@@ -177,8 +184,10 @@ void setup() {
     //setTime(pumpSeconds);
 
     if(testMode==1){
-    digitalWrite(rele1Pin, LOW);
+    digitalWrite(rele1Pin, HIGH);
     digitalWrite(rele2Pin, LOW);
+
+    attachInterrupt(0,pin_ISR, CHANGE);
     }
     Serial1.begin(115200);
     SerialUSB.begin(115200);
@@ -208,8 +217,23 @@ void setup() {
 
 void loop() {
 
-toggleRelay1();
-toggleRelay2();
+//  buttonState = digitalRead(btnPin);
+//  SerialUSB.println("Testing Btn");
+//  SerialUSB.println(buttonState);
+//  if (buttonState == 0) {
+//    toggleRelay1();
+//    toggleRelay2();
+//  }
+
+    SerialUSB.println("Testando lettura distanza");
+    
+    calculateCleanDistance();
+    SerialUSB.println("Distanza Acqua Pulita: ");
+    SerialUSB.println(cleanDistance);
+
+    calculateDirtyDistance();
+    SerialUSB.println("Distanza Acqua Sporca: ");
+    SerialUSB.println(dirtyDistance);
 
 //Struttura base del codice da bypassare in fase di relé testing
 if(testMode==0){
@@ -442,6 +466,18 @@ if(testMode==0){
   // Refresh di 3 secondi
   delay(3000);
 }
+
+
+
+void pin_ISR() {
+  buttonState = digitalRead(btnPin);
+  SerialUSB.print("triggered interrupt");
+  toggleRelay1();
+  toggleRelay2();
+}
+
+
+
 
 //Calcolo volume liquido in container (prendendo default 0.75m x 1.5m)
 long calcLiquidVolume(){
