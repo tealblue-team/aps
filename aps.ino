@@ -10,10 +10,10 @@
 
 #define testMode 1
 
-#define echoCleanPin 4 // pin D2 Arduino to pin Echo of HC-SR04
-#define trigCleanPin 3 //attach pin D3 Arduino to pin Trig of HC-SR04
-#define echoDirtyPin 6 // attach pin D2 Arduino to pin Echo of HC-SR04
-#define trigDirtyPin 5 //attach pin D3 Arduino to pin Trig of HC-SR04
+#define echoCleanPin 3//4 // pin D2 Arduino to pin Echo of HC-SR04
+#define trigCleanPin 2//3 //attach pin D3 Arduino to pin Trig of HC-SR04
+#define echoDirtyPin 5//6 // attach pin D2 Arduino to pin Echo of HC-SR04
+#define trigDirtyPin 4//5 //attach pin D3 Arduino to pin Trig of HC-SR04
 
 #define rele1Pin 12
 #define rele2Pin 13
@@ -230,10 +230,19 @@ void loop() {
     calculateCleanDistance();
     SerialUSB.println("Distanza Acqua Pulita: ");
     SerialUSB.println(cleanDistance);
+    if(cleanDistance<10){
+      SerialUSB.println("Acqua Pulita in esaurimento");
+      toggleRelay1();
+      //toggleRelay2();
+    }
 
     calculateDirtyDistance();
     SerialUSB.println("Distanza Acqua Sporca: ");
     SerialUSB.println(dirtyDistance);
+    if(dirtyDistance<10){
+      SerialUSB.println("Acqua Sporca in esaurimento");
+      toggleRelay2();
+    }
 
 //Struttura base del codice da bypassare in fase di relé testing
 if(testMode==0){
