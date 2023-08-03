@@ -8,7 +8,7 @@
 #define MULTICURRENT 73.3
 #define SUBTRACTCURRENT 36.7
 
-#define testMode 1
+#define testMode 0
 
 #define echoCleanPin 3//4 // pin D2 Arduino to pin Echo of HC-SR04
 #define trigCleanPin 2//3 //attach pin D3 Arduino to pin Trig of HC-SR04
@@ -23,7 +23,9 @@
 #define flowInPin 8
 #define flowOutPin 9
 
-#define SolarCurPin A5
+#define Current2 A5
+#define Current1 A4
+#define TensionMicro A0
 #define PumpsCurPin A3
 #define PumpInCurPin A2
 
@@ -39,6 +41,16 @@ float averageVoltage = 0,tdsValue = 0,temperature = 25;
 
 //VBAT -> solar input
 
+
+
+//
+float voltFinale = 0;
+float correntePompa1 = 0;
+float correntePompa2 = 0;
+float valACorrUno=0;
+float valACorrDue=0;
+
+
 // Tempo trascorso (per timeout di sicurezza)
 time_t seconds = 0;
 // Tempo trascorso (per gestione pompette)
@@ -52,6 +64,10 @@ bool activeSystem=true;
 bool rele1=false;
 bool rele2=false;
 
+// Valori container cm
+const float radiusContainer = 37.5;
+const long areaContainerBase = PI*pow(radiusContainer,2);
+const long heightContainer = 28;//150; //real height, based on max water level (95% of container?)
 
 //bool relePumps=false; //Falso -> pompe default di caffe REMOVED
 
@@ -62,6 +78,11 @@ const long maxClearWater = 662.68; // max litri
 const long warningDirtyWater = 132.53; //warning litri
 const long maxDirtyWater = 662.68; // max litri
 const long waterThreshold = 5; // limiti litri
+
+// Distanza 
+const long warningClearDistance = heightContainer*0.85; // warning cm
+const long warningDirtyDistance = heightContainer*0.15; // warning cm
+const long distanceThreshold = 5; // limiti cm, in considerazione imprecisione sensore e scarto extra
 
 // Valori torbidità (NTU)
 const float warningTorbidity = 0.5;
@@ -77,10 +98,7 @@ long dirtyDuration;
 int cleanDistance; // Variabile per la distanza del 'rimbalzo'
 int dirtyDistance;
 
-// Valori container cm
-const float radiusContainer = 37.5;
-const long areaContainerBase = PI*pow(radiusContainer,2);
-const long heightContainer = 150;
+
 
 // Valori random per solare e liquidi
 long volumeCleanLiquid;
@@ -91,11 +109,6 @@ long waterTorbidityR;
 long waterConductivityR;
 
 
-// Variabili temporanee di distanza
-//long cleanDuration; // variable for the duration of sound wave travel
-//long dirtyDuration;
-//int cleanDistance; // variable for the distance measurement
-//int dirtyDistance;
 
 #define DEBUG true
 
@@ -121,6 +134,7 @@ float valSys = 0.0;
 #define MQTT_WAIT_MSG 8
 #define MQTT_DISCONN  9
 #define SLEEP         10
+#define EXECUTION     11
 
 
 // Your GPRS credentials, if any
@@ -157,11 +171,6 @@ void setup() {
     pinMode(rele2Pin, OUTPUT);
 
     pinMode(btnPin, INPUT);
-    
-    pinMode(A5, INPUT);
-    pinMode(A3, INPUT);
-    pinMode(A2, INPUT);
-    pinMode(A1, INPUT);
 
     pinMode(TdsSensorPin,INPUT);
 
@@ -183,33 +192,18 @@ void setup() {
     //setTime(seconds);
     //setTime(pumpSeconds);
 
-    if(testMode==1){
-    digitalWrite(rele1Pin, HIGH);
+   
+    digitalWrite(rele1Pin, LOW);
     digitalWrite(rele2Pin, LOW);
 
-    attachInterrupt(0,pin_ISR, CHANGE);
-    }
+    //attachInterrupt(0,pin_ISR, CHANGE);
+    
     Serial1.begin(115200);
     SerialUSB.begin(115200);
     
 
     analogReadResolution(12);
 
-    //while (!SerialUSB)
-    {
-        ; // wait for serial port to connect
-    }
- 
- /*   ModuleState=moduleStateCheck();
-    if(ModuleState==false)//if it's off, turn on it.
-    {
-      digitalWrite(PWR_KEY, LOW);
-      delay(3000);
-      digitalWrite(PWR_KEY, HIGH);
-      delay(10000);
-      SerialUSB.println("Now turnning the A9/A9G on.");
-    }*/
- 
   SerialUSB.println("Starting APS test on Maduino Zero A9G board");
 }
 
@@ -217,132 +211,111 @@ void setup() {
 
 void loop() {
 
-//  buttonState = digitalRead(btnPin);
-//  SerialUSB.println("Testing Btn");
-//  SerialUSB.println(buttonState);
-//  if (buttonState == 0) {
-//    toggleRelay1();
-//    toggleRelay2();
-//  }
-
-    SerialUSB.println("Testando lettura distanza");
-    
-    calculateCleanDistance();
-    SerialUSB.println("Distanza Acqua Pulita: ");
-    SerialUSB.println(cleanDistance);
-    if(cleanDistance<10){
-      SerialUSB.println("Acqua Pulita in esaurimento");
-      toggleRelay1();
-      //toggleRelay2();
-    }
-
-    calculateDirtyDistance();
-    SerialUSB.println("Distanza Acqua Sporca: ");
-    SerialUSB.println(dirtyDistance);
-    if(dirtyDistance<10){
-      SerialUSB.println("Acqua Sporca in esaurimento");
+/////////////codice di test
+if(testMode==1){
+    getUSDistance();
+    if(cleanDistance<15){
+      //testing manual
       toggleRelay2();
+      toggleRelay1();
     }
+}
+//////////////
+
 
 //Struttura base del codice da bypassare in fase di relé testing
 if(testMode==0){
 
-  //Futura implementazione di timeout di sicurezza (con calcoli futuri si conteranno i giorni senza cambiamento di flag -> al quarto giorno arriva un allarme ulteriore)
-  //seconds = now();
-  //SerialUSB.println(seconds);
-
-
   String cmd = checkData();
   if(cmd != "")
    parseCommand(cmd);
-
-
   
   // Di default il sistema è attivo, poi facendo i check necessari si ferma o continua a funzionare a seconda dei risultati della valutazione
   activeSystem=true;
 
-
-  
   switch (st){
 
    case CHECK_ENV:
- // Generazione valori pannello solare
-  
-  solarVoltageR=getSolarVoltage();
-  SerialUSB.print("Active Solar Voltage: ");
-  SerialUSB.println(solarVoltageR);
-  
-  solarPowerR=getSolarPower();
-  SerialUSB.print("Active Solar Power: ");
-  SerialUSB.println(solarPowerR);
-  delay(1000);
-  // Controllo input energia solare
-  systemPowered=checkSolar();
-
-  // Se sistema ha abbastanza energia per funzionare
-  if(systemPowered){
-    st=READ_INPUT;
-    SerialUSB.println("Enough Power to turn the System on, proceding");
-  }
-  else{
-    SerialUSB.println("Not Enough Power");
-    st=CHECK_ENV;
-  }
-   break;
+   // Controllo input energia solare
+    systemPowered=checkSolar(20);
+    
+    
+    // Se sistema ha abbastanza energia per funzionare
+    if(systemPowered){
+      activeSystem=true;
+      st=READ_INPUT;
+      SerialUSB.println("Enough Power to turn the System on, proceding");
+    }
+    else{
+      activeSystem=false;
+      turnOffRelay1();
+      turnOffRelay2();
+      SerialUSB.println("Not Enough Power");
+      st=CHECK_ENV;
+    }
+     break;
    
    case READ_INPUT:
    
     SerialUSB.println("State READ_INPUT");
-    
-    calculateCleanDistance();
-  
-    delay(2000);
-    calculateDirtyDistance();
-    delay(1000);
+
+    // Misura correnti su pompe
+    checkValUnoCurrent();
+    checkValDueCurrent();
     
     // Calcolo e generazione dei valori random
-    waterTorbidityR=getWaterTorbidity();
-    waterConductivityR=getWaterConductivity();
+    //waterTorbidityR=getWaterTorbidity();
+    //waterConductivityR=getWaterConductivity();
     
     // Calcolo volumi liquido in cisterne (ipotizzandone lo stesso volume max)
     //volumeCleanLiquid=calcLiquidVolume();
     //volumeDirtyLiquid=calcLiquidVolume();
 
-    // Controllo per valutare se fermare sistema o meno 
+    // Controllo per valutare se fermare sistema o meno
     if(evaluateWaterLvlStatus()==false){activeSystem=false;}
-    if(evaluateWaterTorbidity()==false){activeSystem=false;}
+
+    //ON HOLD FINO A INTRODUZIONE NUOVI SENSORI
+    //if(evaluateWaterTorbidity()==false){activeSystem=false;}
     //if(evaluateCleanWaterConductivity()==false){activeSystem=false;}
     //if(evaluateWaterFlow()==false){activeSystem=false;}
-
-    SerialUSB.print("Solar Voltage: ");
-    SerialUSB.println(solarVoltageR);
-    SerialUSB.print("Solar Power: ");
-    SerialUSB.println(solarPowerR);
     
-//    SerialUSB.println("Dirty Water Volume: ");
-//    SerialUSB.print(volumeDirtyLiquid);
-//    SerialUSB.println("Clean Water Volume: ");
-//    SerialUSB.print(volumeCleanLiquid);
-    delay(1000);
-
-    SerialUSB.print("CleanDistance: ");
-    SerialUSB.println(cleanDistance);
-    SerialUSB.print("DirtyDistance: ");
-    SerialUSB.println(dirtyDistance);
-
 
     if(activeSystem){
           SerialUSB.println("OUT TRUE");
-          st = INIT_MODEM;
-          //Dopo aver effettuato controlli, se tutto va bene -> da qua si potranno attivare / switchare le pompette caffe, ecc
+          st = EXECUTION;
       }
     else{
           SerialUSB.println("OUT FALSE");
           st = CHECK_ENV;
+          turnOffRelay1();
+          turnOffRelay2();
         }
-    
-    
    break;
+
+   case EXECUTION:
+     //Dopo aver effettuato controlli, se tutto va bene -> da qua si potranno attivare / switchare le pompette caffe, ecc
+     //if(rele1=false){
+      turnOnRelay1(); 
+      delay(500);
+      checkValUnoCurrent();
+     
+     // }
+     //if(rele2=false){
+     turnOnRelay2(); 
+     delay(500);
+     checkValDueCurrent();
+           
+//}
+      if(!checkSolar(10)){
+           activeSystem=false;
+           turnOffRelay1();
+           turnOffRelay2();
+        }   
+     
+     delay(500);
+     st = INIT_MODEM;
+   break;
+   
    case INIT_MODEM:
     SerialUSB.println("State INIT_MODEM");
     digitalWrite(RST_KEY, LOW);
@@ -467,25 +440,9 @@ if(testMode==0){
   
 }
 
-
-  
- 
-  
-
   // Refresh di 3 secondi
   delay(3000);
 }
-
-
-
-void pin_ISR() {
-  buttonState = digitalRead(btnPin);
-  SerialUSB.print("triggered interrupt");
-  toggleRelay1();
-  toggleRelay2();
-}
-
-
 
 
 //Calcolo volume liquido in container (prendendo default 0.75m x 1.5m)
@@ -500,12 +457,20 @@ long calcLiquidVolume(){
 
 // Ottieni un valore pseudo randomico per voltaggio 
 long getSolarVoltage(){
-  return 8;
-  //solarVoltageR= random(0,8.2);
+    float valATen=0;
+    valATen = analogRead(TensionMicro);  // lettura tensione partitore per Vmicro
+    float voltMicro = (valATen/4096)* 3.3;
+    float voltFinale = voltMicro * (106.8/6.8);
+    //SerialUSB.println(valATen);
+    SerialUSB.print("Tensione Partitore: ");
+    SerialUSB.println(voltFinale);
+    return voltFinale;
+  
 }
 
 // Ottieni un valore pseudo randomico per potenza 
 long getSolarPower(){
+  
   return 1;
   //solarPowerR= random(0,0.5);
 }
@@ -543,16 +508,25 @@ void getUSDistance(){
   dirtyDistance = dirtyDuration * 0.034 / 2;
   SerialUSB.println("Clean Sensor Distance: ");
   SerialUSB.print(cleanDistance);
-  SerialUSB.print(" cm");
+  SerialUSB.println(" cm");
   SerialUSB.println("Dirty Sensor Distance: ");
   SerialUSB.print(dirtyDistance);
-  SerialUSB.print(" cm");
+  SerialUSB.println(" cm");
   }
 
 
 // Controllo voltaggio e potenza pannello solare
-bool checkSolar(){
-  if(solarVoltageR=0)
+bool checkSolar(int limit){
+
+  solarVoltageR=getSolarVoltage();
+  SerialUSB.print("Active Solar Voltage: ");
+  SerialUSB.println(solarVoltageR);
+  
+  solarPowerR=getSolarPower();
+  SerialUSB.print("Active Solar Power: ");
+  SerialUSB.println(solarPowerR);
+  
+  if(solarVoltageR<limit)
   {
     SerialUSB.println("Insufficient Voltage");
     return false;
@@ -572,56 +546,58 @@ bool checkSolar(){
     }
 }
 
-bool calcSolarCurrent(){
-  float instantCurrent;
-  float curSensorValue;
-  curSensorValue= analogRead(SolarCurPin);
-  instantCurrent = MULTICURRENT * (curSensorValue/3.3) - SUBTRACTCURRENT;
+bool calcPompaUnoCurrent(){
+//  float instantCurrent;
+//  float curPumpsSensorValue;
+//  //curPumpsSensorValue= analogRead(PumpsCurPin);
+//  instantCurrent = MULTICURRENT * (curPumpsSensorValue/3.3) - SUBTRACTCURRENT;
+    float valACorrUno=0;
+    valACorrUno = analogRead(Current1);  // lettura corrente 1
+    float current1 = (valACorrUno/4096 * 3.3) * 3.2; //calcolo in base ai 10A e ai 5 giri
+    SerialUSB.print("Corrente 1: ");
+    SerialUSB.println(current1);
   
 }
-bool calcPumpsCurrent(){
-  float instantCurrent;
-  float curPumpsSensorValue;
-  curPumpsSensorValue= analogRead(PumpsCurPin);
-  instantCurrent = MULTICURRENT * (curPumpsSensorValue/3.3) - SUBTRACTCURRENT;
-  
-}
-bool calcPumpInCurrent(){
-  float instantCurrent;
-  float curPumpInSensorValue;
-  curPumpInSensorValue= analogRead(PumpInCurPin);
-  instantCurrent = MULTICURRENT * (curPumpInSensorValue/3.3) - SUBTRACTCURRENT;
+bool calcPompaDueCurrent(){
+//  float instantCurrent;
+//  float curPumpInSensorValue;
+//  //curPumpInSensorValue= analogRead(PumpInCurPin);
+//  instantCurrent = MULTICURRENT * (curPumpInSensorValue/3.3) - SUBTRACTCURRENT;
+    float valACorrDue=0;
+    valACorrDue = analogRead(Current2);  // lettura corrente 1
+    float current2 = (valACorrDue/4096 * 3.3) * 3.2; //calcolo in base ai 10A e ai 5 giri
+    
+    SerialUSB.print("Corrente 2: ");
+    SerialUSB.println(current2);
   
 }
 
 // Controllo livelli di acqua dei container
 bool evaluateWaterLvlStatus(){
   
-  long cleanLimit = maxClearWater-waterThreshold;
+  calculateCleanDistance();
+  calculateDirtyDistance();
 
-  //Ipotizzando che siano della stessa capienza
-  long dirtyLimit = maxDirtyWater-waterThreshold;
+  //testing with faulty US sensor
+  //return true;
   
-  SerialUSB.println("Evaluating water levels");
-  delay(1000);
-
-
-  volumeCleanLiquid=500;
+  int limit = heightContainer-distanceThreshold;
+  //distanceClean=20; //FORCING INPUT
   
   // Clean Water Container
-  if(volumeCleanLiquid<warningClearWater){
+  if(cleanDistance<warningClearDistance){
     SerialUSB.println("Clean Water Volume is in range");
     //Essendo un valore normale, il sistema deve continuare a funzionare
   }
-  else if(volumeCleanLiquid>=warningClearWater && volumeCleanLiquid<cleanLimit){
-    SerialUSB.println("Warning, clean water container almost full");
+  else if(cleanDistance>=warningClearDistance && cleanDistance<limit){
+    SerialUSB.println("Warning, clean water container almost empty");
     //Manda messaggio di warning su capienza quasi riempita della cisterna 
 
     //Essendo un valore di warning, il sistema deve continuare a funzionare
   }
-  else if(volumeCleanLiquid>cleanLimit && volumeCleanLiquid<=maxClearWater)
+  else if(cleanDistance>limit && cleanDistance<=heightContainer)
   {
-     SerialUSB.println("Alert, clean water container filled");
+     SerialUSB.println("Alert, empty clean water container");
     //Manda messaggio di alert su capienza riempita della cisterna 
 
     //Essendo un valore di alert, il sistema deve fermarsi
@@ -633,37 +609,113 @@ bool evaluateWaterLvlStatus(){
   }
 
 
+  //distanceDirty=40; //FORCING INPUT
 
-  
-  delay(1000);
-
-  volumeDirtyLiquid=500;
-  
   // Dirty Water Container
-  if(volumeDirtyLiquid<waterThreshold){
-     SerialUSB.println("Alert, dirty water container empty");
+  if(dirtyDistance<distanceThreshold){
+     SerialUSB.println("Alert, dirty water container full");
     //Manda messaggio di alert su capienza riempita della cisterna 
 
     //Essendo un valore di alert, il sistema deve fermarsi
     return false;
   }
-  else if(volumeDirtyLiquid<=warningDirtyWater && volumeDirtyLiquid>waterThreshold){
-    SerialUSB.println("Warning, dirty water container almost empty");
+  else if(dirtyDistance<=warningDirtyDistance && dirtyDistance>distanceThreshold){
+    SerialUSB.println("Warning, dirty water container almost full");
     //Manda messaggio di warning su volume quasi terminato dell'acqua sporca 
 
     //Essendo un valore di warning, il sistema deve continuare a funzionare
   }
 
-  else if(volumeDirtyLiquid>warningDirtyWater && volumeDirtyLiquid<=maxDirtyWater)
+  else if(dirtyDistance>warningDirtyDistance && dirtyDistance<=limit)
   {
     
     SerialUSB.println("Dirty Water Volume is in range");
      //Essendo un valore normale, il sistema deve continuare a funzionare
     }
+    else if(dirtyDistance>limit && dirtyDistance<=heightContainer)
+  {
+     SerialUSB.println("Alert, dirty water container empty");
+    //Manda messaggio di alert su capienza riempita della cisterna 
+
+    //Essendo un valore di alert, il sistema deve fermarsi
+    return false;
+    }
   else{
     SerialUSB.println("Unknown data, system stopped");
     return false;
   }
+
+
+
+
+  
+//  long cleanLimit = maxClearWater-waterThreshold;
+//
+//  //Ipotizzando che siano della stessa capienza
+//  long dirtyLimit = maxDirtyWater-waterThreshold;
+//  
+//  SerialUSB.println("Evaluating water levels");
+//  delay(1000);
+//
+//
+//  volumeCleanLiquid=500;
+//  
+//  // Clean Water Container
+//  if(volumeCleanLiquid<warningClearWater){
+//    SerialUSB.println("Clean Water Volume is in range");
+//    //Essendo un valore normale, il sistema deve continuare a funzionare
+//  }
+//  else if(volumeCleanLiquid>=warningClearWater && volumeCleanLiquid<cleanLimit){
+//    SerialUSB.println("Warning, clean water container almost full");
+//    //Manda messaggio di warning su capienza quasi riempita della cisterna 
+//
+//    //Essendo un valore di warning, il sistema deve continuare a funzionare
+//  }
+//  else if(volumeCleanLiquid>cleanLimit && volumeCleanLiquid<=maxClearWater)
+//  {
+//     SerialUSB.println("Alert, clean water container filled");
+//    //Manda messaggio di alert su capienza riempita della cisterna 
+//
+//    //Essendo un valore di alert, il sistema deve fermarsi
+//    return false;
+//    }
+//  else{
+//    SerialUSB.println("Unknown data, system stopped");
+//    return false;
+//  }
+//
+//
+//
+//  
+//  delay(1000);
+//
+//  volumeDirtyLiquid=500;
+//  
+//  // Dirty Water Container
+//  if(volumeDirtyLiquid<waterThreshold){
+//     SerialUSB.println("Alert, dirty water container empty");
+//    //Manda messaggio di alert su capienza riempita della cisterna 
+//
+//    //Essendo un valore di alert, il sistema deve fermarsi
+//    return false;
+//  }
+//  else if(volumeDirtyLiquid<=warningDirtyWater && volumeDirtyLiquid>waterThreshold){
+//    SerialUSB.println("Warning, dirty water container almost empty");
+//    //Manda messaggio di warning su volume quasi terminato dell'acqua sporca 
+//
+//    //Essendo un valore di warning, il sistema deve continuare a funzionare
+//  }
+//
+//  else if(volumeDirtyLiquid>warningDirtyWater && volumeDirtyLiquid<=maxDirtyWater)
+//  {
+//    
+//    SerialUSB.println("Dirty Water Volume is in range");
+//     //Essendo un valore normale, il sistema deve continuare a funzionare
+//    }
+//  else{
+//    SerialUSB.println("Unknown data, system stopped");
+//    return false;
+//  }
 }
 
 
@@ -671,7 +723,7 @@ bool evaluateWaterTorbidity()
 {
   
   SerialUSB.println("Evaluating Dirty Water Source's Torbidity levels");
-  delay(1000);
+  //delay(1000);
   
   // Dirty Water Source
   
@@ -827,7 +879,6 @@ bool moduleStateCheck()
 }
 
 void calculateCleanDistance(){
- 
   digitalWrite(trigCleanPin, LOW);
   delayMicroseconds(2);
   digitalWrite(trigCleanPin, HIGH);
@@ -835,11 +886,12 @@ void calculateCleanDistance(){
   digitalWrite(trigCleanPin, LOW);
   cleanDuration = pulseIn(echoCleanPin, HIGH);
   cleanDistance = cleanDuration * 0.034 / 2; // Speed of sound wave divided by 2 (go and back)
+  SerialUSB.print("CleanDistance: ");
+  SerialUSB.println(cleanDistance);
 
 }
 
 void calculateDirtyDistance(){
-
   digitalWrite(trigDirtyPin, LOW);
   delayMicroseconds(2);
   digitalWrite(trigDirtyPin, HIGH);
@@ -848,10 +900,9 @@ void calculateDirtyDistance(){
   // Reads the echoPin from the containers
   dirtyDuration = pulseIn(echoDirtyPin, HIGH);  
   dirtyDistance = dirtyDuration * 0.034 / 2; // Speed of sound wave divided by 2 (go and back)
-
+  SerialUSB.print("DirtyDistance: ");
+  SerialUSB.println(dirtyDistance);
 }
-
-
 
 void getTorbidityValues(){
    static unsigned long analogSampleTimepoint = millis();
@@ -928,5 +979,50 @@ if(rele2){
     digitalWrite(rele2Pin, HIGH);
     rele2=true;
   }
-  
 }
+
+void turnOnRelay1(){
+    digitalWrite(rele1Pin, HIGH);
+    rele1=true;
+}
+void turnOnRelay2(){
+    digitalWrite(rele2Pin, HIGH);
+    rele2=true;
+}
+
+void turnOffRelay1(){
+    digitalWrite(rele1Pin, LOW);
+    rele1=false;
+}
+void turnOffRelay2(){
+    digitalWrite(rele2Pin, LOW);
+    rele2=false; 
+}
+
+    //V = 0 + (I/Ipn) * 0.625
+    //V = 0 + (I/valA) * 0.625
+void checkValUnoCurrent(){
+    valACorrUno = analogRead(Current1) - 13;  // lettura corrente 1
+    float current1 = (valACorrUno/4096 * 3.3) * 3.2; //calcolo in base ai 10A e ai 5 giri
+    if(current1<25){
+      current1=0;
+    }
+    //SerialUSB.println(valACorrUno);
+    SerialUSB.println("Corrente 1: ");
+    SerialUSB.println(current1);
+}
+
+void checkValDueCurrent(){
+    valACorrDue = analogRead(Current2);  // lettura corrente 2
+    float current2 = (valACorrDue/4096 * 3.3) * 3.2; //calcolo in base ai 10A e ai 5 giri
+    if(current2<25){
+      current2=0;
+    }
+    SerialUSB.println(valACorrDue);
+    SerialUSB.println("Corrente 2: ");
+    SerialUSB.println(current2); 
+    
+}
+
+   
+    
