@@ -9,6 +9,7 @@
 #define SUBTRACTCURRENT 36.7
 
 #define testMode 0
+#define skipmqtt 0
 
 #define echoCleanPin 3//4 // pin D2 Arduino to pin Echo of HC-SR04
 #define trigCleanPin 2//3 //attach pin D3 Arduino to pin Trig of HC-SR04
@@ -50,7 +51,6 @@ float correntePompa2 = 0;
 float valACorrUno=0;
 float valACorrDue=0;
 
-
 // Tempo trascorso (per timeout di sicurezza)
 time_t seconds = 0;
 // Tempo trascorso (per gestione pompette)
@@ -67,7 +67,8 @@ bool rele2=false;
 // Valori container cm
 const float radiusContainer = 37.5;
 const long areaContainerBase = PI*pow(radiusContainer,2);
-const long heightContainer = 28;//150; //real height, based on max water level (95% of container?)
+long heightCleanContainer = 28;//150; //real height, based on max water level (95% of container?)
+long heightDirtyContainer = 28;
 
 //bool relePumps=false; //Falso -> pompe default di caffe REMOVED
 
@@ -80,8 +81,8 @@ const long maxDirtyWater = 662.68; // max litri
 const long waterThreshold = 5; // limiti litri
 
 // Distanza 
-const long warningClearDistance = heightContainer*0.85; // warning cm
-const long warningDirtyDistance = heightContainer*0.15; // warning cm
+long warningClearDistance = heightCleanContainer*0.85; // warning cm
+long warningDirtyDistance = heightDirtyContainer*0.15; // warning cm
 const long distanceThreshold = 5; // limiti cm, in considerazione imprecisione sensore e scarto extra
 
 // Valori torbidità (NTU)
@@ -98,6 +99,9 @@ long dirtyDuration;
 int cleanDistance; // Variabile per la distanza del 'rimbalzo'
 int dirtyDistance;
 
+//Variabili sensori corrente pompa
+float currentDirtyPump;
+float currentCleanPump;
 
 
 // Valori random per solare e liquidi
@@ -112,9 +116,9 @@ long waterConductivityR;
 
 #define DEBUG true
 
-int PWR_KEY = 9;
-int RST_KEY = 6;
-int LOW_PWR_KEY = 5;
+int PWR_KEY = 16;//9;
+int RST_KEY = 15;//6;
+int LOW_PWR_KEY = 14;//5;
 
 #define VBAT A1
 #define VSYS A2
@@ -138,21 +142,33 @@ float valSys = 0.0;
 
 
 // Your GPRS credentials, if any
-const char apn[]      = "myinternet.wind";
+const char apn[]      = "TM";//myinternet.wind";
 const char gprsUser[] = "";
 const char gprsPass[] = "";
 
 
-// MQTT details
+// MQTT details (OLD)
 const char* mqtt_broker    = "maqiatto.com";
-const char* mqtt_topicPub  = "roberto@w2wsolutions.it/maduino";
-const char* mqtt_topicSub  = "roberto@w2wsolutions.it/maduino/cmd";
-const char* mqtt_user      = "roberto@w2wsolutions.it";
-const char* mqtt_psw       = "maduino";
+const char* mqtt_topicPub  = "iot1@coiote.io/maduino";
+const char* mqtt_topicSub  = "iot1@coiote.io/maduino/cmd";
+const char* mqtt_user      = "iot1@coiote.io";
+const char* mqtt_psw       = "coiote123";
+
+String ip,iptemp;
+String timestamp;
+String loc, location, longitude, latitude, stringToSend;
+String rssi, imei;
+String rssitemp, imeitemp;
+char *locptr = NULL;
+char *locstrings[3];
+char locarray[3];
+byte locindex = 0;
+
+
+String coiotebroker;
 
 int len;
-int st = READ_INPUT;
-String loc, location, stringToSend;
+int st = CHECK_ENV;
 
 bool ModuleState=false;
 
@@ -204,6 +220,11 @@ void setup() {
 
     analogReadResolution(12);
 
+    //Calculate dynamically the height of the containers (THIS on empty containers)
+    //calcDirtyHeight();
+    //calcCleanHeight();
+    
+
   SerialUSB.println("Starting APS test on Maduino Zero A9G board");
 }
 
@@ -236,8 +257,11 @@ if(testMode==0){
   switch (st){
 
    case CHECK_ENV:
+
+   //FORZANDO VOLTAGGIO POSITIVO
+   
    // Controllo input energia solare
-    systemPowered=checkSolar(20);
+    systemPowered=true;//checkSolar(10);//20);
     
     
     // Se sistema ha abbastanza energia per funzionare
@@ -251,7 +275,7 @@ if(testMode==0){
       turnOffRelay1();
       turnOffRelay2();
       SerialUSB.println("Not Enough Power");
-      st=CHECK_ENV;
+      st=INIT_MODEM;//CHECK_ENV;
     }
      break;
    
@@ -278,6 +302,10 @@ if(testMode==0){
     //if(evaluateWaterTorbidity()==false){activeSystem=false;}
     //if(evaluateCleanWaterConductivity()==false){activeSystem=false;}
     //if(evaluateWaterFlow()==false){activeSystem=false;}
+
+
+
+   
     
 
     if(activeSystem){
@@ -290,9 +318,18 @@ if(testMode==0){
           turnOffRelay1();
           turnOffRelay2();
         }
+
+
+
+      //FORZATO DISATTIVATO
+      turnOffRelay1();
+      turnOffRelay2();
+      st = INIT_MODEM;
+      
    break;
 
    case EXECUTION:
+   SerialUSB.println("State EXECUTION");
      //Dopo aver effettuato controlli, se tutto va bene -> da qua si potranno attivare / switchare le pompette caffe, ecc
      //if(rele1=false){
       turnOnRelay1(); 
@@ -306,14 +343,16 @@ if(testMode==0){
      checkValDueCurrent();
            
 //}
-      if(!checkSolar(10)){
-           activeSystem=false;
-           turnOffRelay1();
-           turnOffRelay2();
-        }   
+// Check da sistemare (fallisce)
+//      if(!checkSolar(10)){
+//           activeSystem=false;
+//           turnOffRelay1();
+//           turnOffRelay2();
+//        }   
      
      delay(500);
      st = INIT_MODEM;
+     if(skipmqtt){st = CHECK_ENV;}
    break;
    
    case INIT_MODEM:
@@ -331,22 +370,82 @@ if(testMode==0){
      st = INIT_MODEM;
     else{
      sendData("AT+CCID", 3000, DEBUG);
-     sendData("AT+EGMR=2,7", 3000, DEBUG);
-     sendData("AT+CPIN?", 3000, DEBUG);
-     sendData("AT+CREG?", 3000, DEBUG);
-     sendData("AT+CSQ", 3000, DEBUG);
-     sendData("AT+COPS?", 3000, DEBUG);
-     sendData("AT+CGACT=0", 2000, DEBUG);
-     sendData("AT+CGATT=0", 1000, DEBUG);
-     sendData("AT+CGDCONT=1,\"IP\",\"myinternet.wind\"", 3000, DEBUG);
+
+     //sendData("AT+ATQ2", 1000, DEBUG);  //added
+     
+     imeitemp=sendData("AT+EGMR=2,7", 3000, DEBUG); //imei
+     sendData("AT+CPIN?", 3000, DEBUG); //sim pin
+     sendData("AT+CREG?", 3000, DEBUG); //net registration
+//      sendData("AT+QIFGCNT=0", 3000, DEBUG);
+//      sendData("AT+QICSGP=1,"bluevia.movistar.es", 3000, DEBUG);
+//      timestamp=sendData("AT+QGSMLOC=2", 3000, DEBUG);
+//      SerialUSB.println("TIMESTAMPPPPPPPPPPPPPPPPPPP");
+//      SerialUSB.println(timestamp);
+
+     rssitemp=sendData("AT+CSQ", 3000, DEBUG); // signal quality
+     sendData("AT+COPS?", 3000, DEBUG); //select vender
+     sendData("AT+CGACT=0", 2000, DEBUG); //pdpcontext
+     sendData("AT+CGATT=0", 1000, DEBUG); //attach mt to packet domain
+
+     sendData("AT+CGDCONT=1,\"IP\",\"TM\"", 3000, DEBUG); //choose pdpcontext
      sendData("AT+CGATT=1", 1000, DEBUG);
      sendData("AT+CGACT=1,1", 2000, DEBUG);
-     sendData("AT+CIFSR",2000, DEBUG);
-     sendData("AT+GPS=1",5000, DEBUG);
+     iptemp=sendData("AT+CIFSR",1000,DEBUG); //2000,DEBUG); //ip
+
+     //AT+HTTPACTION=0    // Connect the HTTP. (0-get, 1-post, 2-head)
+     //AT+HTTPHEAD        // Read the response's header.
+     //AT+HTTPREAD=0,3    // Read the content (“3” means the number of the reading data)
+     
+     sendData("AT+HTTPINIT",2000, DEBUG);
+     //sendData("AT+HTTPPARA=\"CID\",\"1\"",2000, DEBUG);
+     //sendData("AT+HTTPPARA=\"URL\",\"timestamp.coiote.it\"",2000, DEBUG);
+     sendData("AT+HTTPPARA=\"URL\",\"http://timestamp.globalsign.com\"",2000, DEBUG);
+     sendData("AT+HTTPACTION=0",2000,DEBUG);
+     
+     //timestamp=sendData("AT+HTTPHEAD",2000,DEBUG);
+     timestamp=sendData("AT+HTTPREAD=0,3",2000,DEBUG);
+     //timestamp=sendData("AT+HTTPGET",2000, DEBUG);
+
+
+
+     
+     SerialUSB.println("TIMESTAMPPPPPPPPPPPPPPPP");
+     SerialUSB.println(timestamp);
+     if(imeitemp!="" && imei=="") {
+      imei=imeitemp;
+      imei.remove(0,8);    //remove initial newline chars
+      imei.remove(imei.length()-8,10); //remove final newline chars
+      //coiotebroker="data.coiote.it:1883/coiote/kva/aps/"+imei+"/";
+      coiotebroker="data.coiote.it:1883/coiote/kva/fotovoltaicofabio/"+imei+"/";
+      //tcp://data.coiote.it:1883/coiote/val/[ apy-key ]/(Unique ID)/
+      //SerialUSB.println("PRINTING IMEI===============================");
+      //SerialUSB.println(imei);
+     }
+     if(iptemp!="" && ip=="") {
+      ip=iptemp;
+      ip.remove(0,2);    //remove initial newline chars
+      ip.remove(ip.length()-8,10); //remove final newline chars
+     }
+     if(rssitemp!="" && rssi=="") {
+      rssi=rssitemp;
+      rssi.remove(0,8);    //remove initial newline chars
+      rssi.remove(rssi.length()-8,10); //remove final newline chars
+      rssi.replace(",",".");
+     }
+
+
+      
+//      sendData("AT+HTTPINIT",1000, DEBUG);
+//      sendData("AT+HTTPPARA=\"CID\",\"1\"",1000, DEBUG);
+//      sendData("AT+HTTPPARA=\"URL\",\"timestamp.coiote.io\"",1000, DEBUG);
+//      timestamp=sendData("AT+HTTPGET",2000, DEBUG);
+
+     
+      sendData("AT+GPS=1",5000, DEBUG);
      
      SerialUSB.println("Maduino A9/A9G Cicle Begin!");
      //st = GPS_LOCATION;
-      st = MQTT_CONN;
+     st = MQTT_CONN;
      
      valBat = (PS*2*analogRead(VBAT)/RES);
      
@@ -363,7 +462,19 @@ if(testMode==0){
      SerialUSB.println("GPS_LOCATION");
      location = gspLocation(5000);
      loc = location.substring(2,20);
+     loc.toCharArray(locarray, loc.length()+1);
+     if(loc!=""){
+        locptr = strtok(locarray, ",");  // delimiter
+        while (locptr != NULL)
+         {
+            locstrings[locindex] = locptr;
+            locindex++;
+            locptr = strtok(NULL, ",");
+         }
+      latitude = atoi(locstrings[0]);
+      longitude = atoi(locstrings[1]);
      
+     }
      SerialUSB.println(location);
      SerialUSB.println(loc);
      
@@ -371,30 +482,94 @@ if(testMode==0){
       st = MQTT_CONN;
      else{
       location = "NO FIX";
-      st = INIT_MODEM;
+      st = MQTT_CONN;//INIT_MODEM;
      }
    break;
    
    case MQTT_CONN:
     SerialUSB.println("MQTT CONNECTION");
-    sendData("AT+MQTTCONN=\"maqiatto.com\",1883,\"maduino\",120,0,\"roberto@w2wsolutions.it\",\"maduino\"", 2000, DEBUG);
+    //sendData("AT+MQTTCONN=\""+coiotebroker+"\",1883,\"aps\",120,0,\"aps\",\"aps\"", 2000, DEBUG);
+    sendData("AT+MQTTCONN=\""+coiotebroker+"\",1883,\"fotovoltaicofabio\",120,0,\"riva.fabio@gmail.com\",\"asd\"", 2000, DEBUG);
+    
+    //sendData("AT+MQTTCONN=\"maqiatto.com\",1883,\"maduino\",120,0,\"roberto@w2wsolutions.it\",\"maduino\"", 2000, DEBUG);
     st = MQTT_PUB;
    break;
    
    case MQTT_PUB:
     SerialUSB.println("MQTT PUBLISH");
-     // Build string to send
-    stringToSend = "AT+MQTTPUB=\"roberto@w2wsolutions.it/maduino\",\"{'l':";
-    //stringToSend += loc;
-    stringToSend +=";'B':";
+
+    //String timestamp= String(day())+String(month())+String(year())+String(hour())+String(minute())+String(second());
+    //sendData("AT+CCLK",2000, DEBUG);//String(now());
+
+    // Build string to send
+
+
+    //FORCING DATA
+    
+    //timestamp= "1234567";
+    //ip= "128.121.12.1";
+    latitude= "45.6130597";
+    longitude= "9.5019483";
+    
+//    stringToSend = "AT+MQTTPUB=\"roberto@w2wsolutions.it/maduino\",\"{\"_t\":\"";
+//    stringToSend += timestamp;
+//    stringToSend += "\",\"_y\":\"l\",\"_s\":\"\"";
+//    stringToSend +=",\"_i\":\"";
+//    stringToSend += ip;
+//    stringToSend +="\",\"poms\":[{\"_p\":\"0";
+//    stringToSend +="\",\"R\":";
+//    stringToSend += rssi;
+//    stringToSend +=",\"b\":";
+//    stringToSend += valBat;
+//    stringToSend +="},{\"_p\":\"1\"";
+//    stringToSend +=",\"ON\":";
+//    stringToSend += activeSystem;
+//    stringToSend +="\",\"L\":\"";
+//    stringToSend += loc;
+//    stringToSend +="\",\"B\":";
+//    stringToSend += valBat;
+//    stringToSend +=",\"P\":";
+//    stringToSend += valSys;
+//    stringToSend +=",\"CD\":";
+//    stringToSend += cleanDistance;
+//    stringToSend +=",\"DD\":";
+//    stringToSend += dirtyDistance;
+//    stringToSend += "}]}\",0,0,0";
+
+    stringToSend = "AT+MQTTPUB=\"fotovoltaicofabio/"+imei+"\",\"_t=";
+    //stringToSend = "AT+MQTTPUB=\"aps/"+imei+"\",\"_t=";
+    //stringToSend = "AT+MQTTPUB=\"roberto@w2wsolutions.it/maduino\",\"_t=";
+    stringToSend += timestamp;
+    stringToSend += ";_y=l;_s=0;";
+    stringToSend +="_i=";
+    stringToSend += ip;
+    stringToSend +="_p=0;";
+    stringToSend +="R=";
+    stringToSend += rssi;
+    stringToSend +=";b=";
     stringToSend += valBat;
-    stringToSend +=";'P':";
+    stringToSend +="_p=1";
+    stringToSend +=";ON=";
+    stringToSend += activeSystem;
+    stringToSend +=";LAT=";
+    stringToSend += latitude;
+    stringToSend +=";LON=";
+    stringToSend += longitude;
+//    stringToSend +=";L=";
+//    stringToSend += loc;
+//    stringToSend +=";B=";
+//    stringToSend += valBat;
+    stringToSend +=";P=";
     stringToSend += valSys;
-    stringToSend +=";'CD':";
+    stringToSend +=";CD=";
     stringToSend += cleanDistance;
-    stringToSend +=";'DD':";
+    stringToSend +=";DD=";
     stringToSend += dirtyDistance;
-    stringToSend += "}\",0,0,0";
+    stringToSend +=";CP=";
+    stringToSend += currentCleanPump;
+    stringToSend +=";DP=";
+    stringToSend += currentDirtyPump;
+    stringToSend += "\",0,0,0";
     
     SerialUSB.println(stringToSend);
     sendData(stringToSend, 1000, DEBUG);
@@ -447,10 +622,10 @@ if(testMode==0){
 
 //Calcolo volume liquido in container (prendendo default 0.75m x 1.5m)
 long calcLiquidVolume(){
-   long randomDistance=random(0,heightContainer);
+   long randomDistance=random(0,heightCleanContainer);
    long height;
    long volume;
-   height=heightContainer-randomDistance;
+   height=heightCleanContainer-randomDistance;
    volume=(height*areaContainerBase)/1000; //1000 cm cubi = 1 litro
    return volume;
 }
@@ -546,31 +721,6 @@ bool checkSolar(int limit){
     }
 }
 
-bool calcPompaUnoCurrent(){
-//  float instantCurrent;
-//  float curPumpsSensorValue;
-//  //curPumpsSensorValue= analogRead(PumpsCurPin);
-//  instantCurrent = MULTICURRENT * (curPumpsSensorValue/3.3) - SUBTRACTCURRENT;
-    float valACorrUno=0;
-    valACorrUno = analogRead(Current1);  // lettura corrente 1
-    float current1 = (valACorrUno/4096 * 3.3) * 3.2; //calcolo in base ai 10A e ai 5 giri
-    SerialUSB.print("Corrente 1: ");
-    SerialUSB.println(current1);
-  
-}
-bool calcPompaDueCurrent(){
-//  float instantCurrent;
-//  float curPumpInSensorValue;
-//  //curPumpInSensorValue= analogRead(PumpInCurPin);
-//  instantCurrent = MULTICURRENT * (curPumpInSensorValue/3.3) - SUBTRACTCURRENT;
-    float valACorrDue=0;
-    valACorrDue = analogRead(Current2);  // lettura corrente 1
-    float current2 = (valACorrDue/4096 * 3.3) * 3.2; //calcolo in base ai 10A e ai 5 giri
-    
-    SerialUSB.print("Corrente 2: ");
-    SerialUSB.println(current2);
-  
-}
 
 // Controllo livelli di acqua dei container
 bool evaluateWaterLvlStatus(){
@@ -579,9 +729,10 @@ bool evaluateWaterLvlStatus(){
   calculateDirtyDistance();
 
   //testing with faulty US sensor
-  //return true;
+  return true;
   
-  int limit = heightContainer-distanceThreshold;
+  int limitClean = heightCleanContainer-distanceThreshold;
+  int limitDirty = heightDirtyContainer-distanceThreshold;
   //distanceClean=20; //FORCING INPUT
   
   // Clean Water Container
@@ -589,13 +740,13 @@ bool evaluateWaterLvlStatus(){
     SerialUSB.println("Clean Water Volume is in range");
     //Essendo un valore normale, il sistema deve continuare a funzionare
   }
-  else if(cleanDistance>=warningClearDistance && cleanDistance<limit){
+  else if(cleanDistance>=warningClearDistance && cleanDistance<limitClean){
     SerialUSB.println("Warning, clean water container almost empty");
     //Manda messaggio di warning su capienza quasi riempita della cisterna 
 
     //Essendo un valore di warning, il sistema deve continuare a funzionare
   }
-  else if(cleanDistance>limit && cleanDistance<=heightContainer)
+  else if(cleanDistance>limitClean && cleanDistance<=heightCleanContainer)
   {
      SerialUSB.println("Alert, empty clean water container");
     //Manda messaggio di alert su capienza riempita della cisterna 
@@ -626,13 +777,13 @@ bool evaluateWaterLvlStatus(){
     //Essendo un valore di warning, il sistema deve continuare a funzionare
   }
 
-  else if(dirtyDistance>warningDirtyDistance && dirtyDistance<=limit)
+  else if(dirtyDistance>warningDirtyDistance && dirtyDistance<=limitDirty)
   {
     
     SerialUSB.println("Dirty Water Volume is in range");
      //Essendo un valore normale, il sistema deve continuare a funzionare
     }
-    else if(dirtyDistance>limit && dirtyDistance<=heightContainer)
+    else if(dirtyDistance>limitDirty && dirtyDistance<=heightDirtyContainer)
   {
      SerialUSB.println("Alert, dirty water container empty");
     //Manda messaggio di alert su capienza riempita della cisterna 
@@ -1001,28 +1152,74 @@ void turnOffRelay2(){
 
     //V = 0 + (I/Ipn) * 0.625
     //V = 0 + (I/valA) * 0.625
+    //  instantCurrent = MULTICURRENT * (curPumpsSensorValue/3.3) - SUBTRACTCURRENT;
 void checkValUnoCurrent(){
     valACorrUno = analogRead(Current1) - 13;  // lettura corrente 1
-    float current1 = (valACorrUno/4096 * 3.3) * 3.2; //calcolo in base ai 10A e ai 5 giri
-    if(current1<25){
-      current1=0;
+    currentDirtyPump = (valACorrUno/4096 * 3.3) * 3.2; //calcolo in base ai 10A e ai 5 giri
+    if(currentDirtyPump<25){
+      currentDirtyPump=0;
     }
     //SerialUSB.println(valACorrUno);
     SerialUSB.println("Corrente 1: ");
-    SerialUSB.println(current1);
+    SerialUSB.println(currentDirtyPump);
 }
 
 void checkValDueCurrent(){
     valACorrDue = analogRead(Current2);  // lettura corrente 2
-    float current2 = (valACorrDue/4096 * 3.3) * 3.2; //calcolo in base ai 10A e ai 5 giri
-    if(current2<25){
-      current2=0;
+    currentCleanPump = (valACorrDue/4096 * 3.3) * 3.2; //calcolo in base ai 10A e ai 5 giri
+    if(currentCleanPump<25){
+      currentCleanPump=0;
     }
-    SerialUSB.println(valACorrDue);
+    
     SerialUSB.println("Corrente 2: ");
-    SerialUSB.println(current2); 
+    SerialUSB.println(currentCleanPump); 
     
 }
 
-   
+void calcCleanHeight(){
+
+  digitalWrite(trigCleanPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigCleanPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigCleanPin, LOW);
+  cleanDuration = pulseIn(echoCleanPin, HIGH);
+  heightCleanContainer = cleanDuration * 0.034 / 2; 
+  warningClearDistance = heightCleanContainer*0.85; // warning cm
+  
+}
+
+void calcDirtyHeight(){
+
+  digitalWrite(trigDirtyPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigDirtyPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigDirtyPin, LOW);
+  dirtyDuration = pulseIn(echoDirtyPin, HIGH);
+  heightDirtyContainer = dirtyDuration * 0.034 / 2; 
+  warningDirtyDistance = heightDirtyContainer*0.15; // warning cm
+  
+}
+
+void getStaticInfo(){
+  
+}
+//void processSyncMessage() {
+// // if time sync available from serial port, update time and return true
+// while (Serial.available() >= TIME_MSG_LEN ) { // time message consists of header & 10 ASCII digits
+// char c = Serial.read() ;
+// Serial.print(c);
+// if ( c == TIME_HEADER ) {
+// time_t pctime = 0;
+// for (int i = 0; i < TIME_MSG_LEN - 1; i++) {
+// c = Serial.read();
+// if ( c >= '0' && c <= '9') {
+// pctime = (10 * pctime) + (c - '0') ; // convert digits to a number
+// }
+// }
+// setTime(pctime); // Sync Arduino clock to the time received on the serial port
+// }
+// }
+//}
     
